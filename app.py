@@ -26,8 +26,6 @@ if uploaded_file:
         id_vars=["Vendor","Item","Process"],
         var_name="Month", value_name="Demand"
     )
-
-    # Gom demand theo Vendor + Process + Month
     demand_sum = demand_long.groupby(["Vendor","Process","Month"])["Demand"].sum().reset_index()
 
     # Merge với capacity
@@ -51,7 +49,7 @@ if uploaded_file:
     }).reset_index()
     summary_total["Fulfillment_%"] = (summary_total["Capacity"] / summary_total["Demand"] * 100).round(2)
 
-    # ===== Chuẩn hóa cột Month sang yyyy-mm =====
+    # ===== Chuẩn hóa Month sang yyyy-mm =====
     month_map = {
         "Jan":"2025-01","Feb":"2025-02","Mar":"2025-03","Apr":"2025-04","May":"2025-05",
         "Jun":"2025-06","Jul":"2025-07","Aug":"2025-08","Sep":"2025-09","Oct":"2025-10",
@@ -65,6 +63,14 @@ if uploaded_file:
 
     summary_vendor = summary_vendor.sort_values(["Vendor","Month"])
     summary_total = summary_total.sort_values("Month")
+
+    # ===== Slicer theo tháng =====
+    months_available = sorted(summary_total["Month"].dt.strftime("%Y-%m").unique())
+    months_selected = st.multiselect("📅 Chọn tháng:", months_available, default=months_available)
+
+    if months_selected:
+        summary_vendor = summary_vendor[summary_vendor["Month"].dt.strftime("%Y-%m").isin(months_selected)]
+        summary_total = summary_total[summary_total["Month"].dt.strftime("%Y-%m").isin(months_selected)]
 
     # ===== Hiển thị bảng =====
     st.subheader("🔎 Vendor Summary")
@@ -84,18 +90,20 @@ if uploaded_file:
     if vendor_selected == "ALL":
         chart_data = summary_total.melt(id_vars="Month", value_vars=["Demand","Capacity"], var_name="Type", value_name="Value")
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
-                     title="Total Demand vs Capacity")
+                     title="Total Demand vs Capacity", text="Value")
     else:
         vendor_data = summary_vendor[summary_vendor["Vendor"] == vendor_selected]
         chart_data = vendor_data.melt(id_vars=["Month"], value_vars=["Demand","Capacity"], var_name="Type", value_name="Value")
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
-                     title=f"Vendor {vendor_selected} - Demand vs Capacity")
+                     title=f"Vendor {vendor_selected} - Demand vs Capacity", text="Value")
 
+    fig.update_traces(textposition="outside")  # hiển thị value trên bar
     fig.update_layout(
         xaxis=dict(
             tickformat="%Y-%m",
             type="category"
-        )
+        ),
+        uniformtext_minsize=8, uniformtext_mode="hide"
     )
     st.plotly_chart(fig, use_container_width=True)
 
