@@ -2,11 +2,14 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Supplier Capacity Dashboard", layout="wide")
 st.title("📊 Supplier Capacity Dashboard")
 
-# Upload file Excel
+# ================= Upload file =================
 uploaded_file = st.file_uploader("Upload Excel Input", type=["xlsx"])
 if uploaded_file:
     # Đọc dữ liệu
@@ -21,11 +24,13 @@ if uploaded_file:
         capacity_df["WorkingDays"]
     )
 
-    # ===== Demand reshape =====
+    # ===== Demand reshape (Month đã ở dạng YYYY-mm) =====
     demand_long = demand_df.melt(
         id_vars=["Vendor","Item","Process"],
         var_name="Month", value_name="Demand"
     )
+    demand_long["Month"] = pd.to_datetime(demand_long["Month"], format="%Y-%m")
+
     demand_sum = demand_long.groupby(["Vendor","Process","Month"])["Demand"].sum().reset_index()
 
     # Merge với capacity
@@ -33,12 +38,13 @@ if uploaded_file:
         capacity_df[["Vendor","Process","Capacity"]],
         on=["Vendor","Process"], how="left"
     )
+    # ✅ Công thức đúng: Capacity / Demand * 100
     merged["Fulfillment_%"] = (merged["Capacity"] / merged["Demand"] * 100).round(2)
-    merged["Status"] = merged.apply(lambda r: "OK" if r["Capacity"] >= r["Demand"] else "Shortage", axis=1)
+    merged["Status"] = merged.apply(lambda r: "OK" if r["Fulfillment_%"] >= 100 else "Shortage", axis=1)
 
     # ===== Summary theo Vendor =====
     summary_vendor = merged.groupby(["Vendor","Month"]).agg({
-        "Capacity":"min",
+        "Capacity":"min",   # bottleneck process
         "Demand":"sum"
     }).reset_index()
     summary_vendor["Fulfillment_%"] = (summary_vendor["Capacity"] / summary_vendor["Demand"] * 100).round(2)
@@ -49,18 +55,7 @@ if uploaded_file:
     }).reset_index()
     summary_total["Fulfillment_%"] = (summary_total["Capacity"] / summary_total["Demand"] * 100).round(2)
 
-    # ===== Chuẩn hóa Month sang yyyy-mm =====
-    month_map = {
-        "Jan":"2025-01","Feb":"2025-02","Mar":"2025-03","Apr":"2025-04","May":"2025-05",
-        "Jun":"2025-06","Jul":"2025-07","Aug":"2025-08","Sep":"2025-09","Oct":"2025-10",
-        "Nov":"2025-11","Dec":"2025-12"
-    }
-    summary_vendor["Month"] = summary_vendor["Month"].map(month_map)
-    summary_total["Month"] = summary_total["Month"].map(month_map)
-
-    summary_vendor["Month"] = pd.to_datetime(summary_vendor["Month"])
-    summary_total["Month"] = pd.to_datetime(summary_total["Month"])
-
+    # Sort theo thời gian
     summary_vendor = summary_vendor.sort_values(["Vendor","Month"])
     summary_total = summary_total.sort_values("Month")
 
@@ -88,37 +83,81 @@ if uploaded_file:
     vendor_selected = st.selectbox("Chọn Vendor", ["ALL"] + sorted(summary_vendor["Vendor"].unique()))
 
     if vendor_selected == "ALL":
-        chart_data = summary_total.melt(id_vars="Month", value_vars=["Demand","Capacity"], var_name="Type", value_name="Value")
+        chart_data = summary_total.melt(id_vars="Month", value_vars=["Demand","Capacity"], 
+                                        var_name="Type", value_name="Value")
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
                      title="Total Demand vs Capacity", text="Value")
     else:
         vendor_data = summary_vendor[summary_vendor["Vendor"] == vendor_selected]
-        chart_data = vendor_data.melt(id_vars=["Month"], value_vars=["Demand","Capacity"], var_name="Type", value_name="Value")
+        chart_data = vendor_data.melt(id_vars=["Month"], value_vars=["Demand","Capacity"], 
+                                      var_name="Type", value_name="Value")
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
                      title=f"Vendor {vendor_selected} - Demand vs Capacity", text="Value")
 
-    fig.update_traces(textposition="outside")  # hiển thị value trên bar
+    fig.update_traces(textposition="outside")
     fig.update_layout(
-        xaxis=dict(
-            tickformat="%Y-%m",
-            type="category"
-        ),
+        xaxis=dict(tickformat="%Y-%m", type="category"),
         uniformtext_minsize=8, uniformtext_mode="hide"
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ===== Xuất Excel =====
+    # ===== Xuất Excel (theo vendor chọn) =====
     out_file = BytesIO()
     with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
         capacity_df.to_excel(writer, sheet_name="Capacity_Input", index=False)
         demand_df.to_excel(writer, sheet_name="Demand_Input", index=False)
-        merged.to_excel(writer, sheet_name="Process_Result", index=False)
-        summary_vendor.to_excel(writer, sheet_name="Vendor_Summary", index=False)
-        summary_total.to_excel(writer, sheet_name="Total_Summary", index=False)
+
+        if vendor_selected == "ALL":
+            merged.to_excel(writer, sheet_name="Process_Result", index=False)
+            summary_vendor.to_excel(writer, sheet_name="Vendor_Summary", index=False)
+            summary_total.to_excel(writer, sheet_name="Total_Summary", index=False)
+        else:
+            merged_vendor = merged[merged["Vendor"] == vendor_selected]
+            summary_vendor_sel = summary_vendor[summary_vendor["Vendor"] == vendor_selected]
+
+            merged_vendor.to_excel(writer, sheet_name=f"{vendor_selected}_Process", index=False)
+            summary_vendor_sel.to_excel(writer, sheet_name=f"{vendor_selected}_Summary", index=False)
+
+    # ===== Highlight Excel =====
+    out_file.seek(0)
+    wb = load_workbook(out_file)
+
+    def format_sheet(ws):
+        for col in ws.columns:
+            max_len = max(len(str(c.value)) if c.value else 0 for c in col)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 2
+        for c in ws[1]:
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+
+        # highlight theo Fulfillment_% nếu có
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for cell in row:
+                if "Fulfillment" in str(ws[1][cell.column-1].value):
+                    try:
+                        val = float(cell.value)
+                        if val < 100:
+                            cell.fill = PatternFill("solid", fgColor="FFC7CE")  # đỏ nhạt
+                        else:
+                            cell.fill = PatternFill("solid", fgColor="C6EFCE")  # xanh nhạt
+                    except:
+                        pass
+
+    for sheet in wb.sheetnames:
+        format_sheet(wb[sheet])
+
+    final_out = BytesIO()
+    wb.save(final_out)
+
+    file_name = (
+        "Supplier_Capacity_Result_ALL.xlsx"
+        if vendor_selected == "ALL"
+        else f"Supplier_Capacity_Result_{vendor_selected}.xlsx"
+    )
 
     st.download_button(
         label="⬇️ Download Result Excel",
-        data=out_file.getvalue(),
-        file_name="Supplier_Capacity_Result.xlsx",
+        data=final_out.getvalue(),
+        file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
