@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import numpy as np
 from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -38,7 +39,7 @@ if uploaded_file:
         capacity_df[["Vendor","Process","Capacity"]],
         on=["Vendor","Process"], how="left"
     )
-    # ✅ Công thức đúng: Capacity / Demand * 100
+    # ✅ Fulfillment% = Capacity / Demand * 100
     merged["Fulfillment_%"] = (merged["Capacity"] / merged["Demand"] * 100).round(2)
     merged["Status"] = merged.apply(lambda r: "OK" if r["Fulfillment_%"] >= 100 else "Shortage", axis=1)
 
@@ -83,14 +84,18 @@ if uploaded_file:
     vendor_selected = st.selectbox("Chọn Vendor", ["ALL"] + sorted(summary_vendor["Vendor"].unique()))
 
     if vendor_selected == "ALL":
-        chart_data = summary_total.melt(id_vars="Month", value_vars=["Demand","Capacity"], 
-                                        var_name="Type", value_name="Value")
+        chart_data = summary_total.melt(
+            id_vars="Month", value_vars=["Demand","Capacity"], 
+            var_name="Type", value_name="Value"
+        )
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
                      title="Total Demand vs Capacity", text="Value")
     else:
         vendor_data = summary_vendor[summary_vendor["Vendor"] == vendor_selected]
-        chart_data = vendor_data.melt(id_vars=["Month"], value_vars=["Demand","Capacity"], 
-                                      var_name="Type", value_name="Value")
+        chart_data = vendor_data.melt(
+            id_vars=["Month"], value_vars=["Demand","Capacity"], 
+            var_name="Type", value_name="Value"
+        )
         fig = px.bar(chart_data, x="Month", y="Value", color="Type", barmode="group",
                      title=f"Vendor {vendor_selected} - Demand vs Capacity", text="Value")
 
@@ -100,6 +105,69 @@ if uploaded_file:
         uniformtext_minsize=8, uniformtext_mode="hide"
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ===== Heatmap Fulfillment% =====
+    st.subheader("🔥 Fulfillment% Heatmap")
+
+    # Tính Fulfillment% trung bình theo Vendor
+    vendor_avg = summary_vendor.groupby("Vendor")["Fulfillment_%"].mean().reset_index()
+
+    top_mode = st.radio("Chọn phạm vi hiển thị Heatmap:", ["All Vendors", "Top N Vendor thiếu nhất"])
+    top_n = None
+    if top_mode == "Top N Vendor thiếu nhất":
+        top_n = st.slider("Chọn N (số vendor):", 5, 50, 20)
+        worst_vendors = vendor_avg.nsmallest(top_n, "Fulfillment_%")["Vendor"].tolist()
+        heatmap_data = summary_vendor[summary_vendor["Vendor"].isin(worst_vendors)]
+    else:
+        heatmap_data = summary_vendor
+
+    heatmap_df = heatmap_data.pivot_table(
+        index="Vendor", 
+        columns=heatmap_data["Month"].dt.strftime("%Y-%m"),
+        values="Fulfillment_%", aggfunc="mean"
+    ).fillna(0)
+
+    colorscale = [
+        [0.0, "green"],   # ≤75%
+        [0.75, "green"],
+        [0.85, "yellow"], # 75–85%
+        [1.0, "red"]      # >85%
+    ]
+
+    fig_heat = px.imshow(
+        heatmap_df.values,
+        x=heatmap_df.columns,
+        y=heatmap_df.index,
+        color_continuous_scale=colorscale,
+        aspect="auto",
+        labels=dict(x="Month", y="Vendor", color="Fulfillment%")
+    )
+
+    fig_heat.update_traces(
+        text=np.round(heatmap_df.values, 1),
+        texttemplate="%{text}",
+        textfont=dict(size=10)
+    )
+
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+    # ===== Line Chart Fulfillment% =====
+    st.subheader("📈 Fulfillment% Trend")
+
+    if vendor_selected == "ALL":
+        fig_line = px.line(summary_total, x="Month", y="Fulfillment_%",
+                           title="Trend Fulfillment% - All Vendors")
+    else:
+        vendor_data = summary_vendor[summary_vendor["Vendor"] == vendor_selected]
+        fig_line = px.line(vendor_data, x="Month", y="Fulfillment_%",
+                           title=f"Trend Fulfillment% - {vendor_selected}")
+
+    fig_line.update_traces(mode="lines+markers", line=dict(width=2))
+    fig_line.update_layout(
+        xaxis=dict(tickformat="%Y-%m", type="category"),
+        yaxis=dict(title="Fulfillment %")
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
 
     # ===== Xuất Excel (theo vendor chọn) =====
     out_file = BytesIO()
